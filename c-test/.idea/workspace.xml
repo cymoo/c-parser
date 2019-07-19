@@ -66,8 +66,8 @@
     </option>
   </component>
   <component name="ProjectFrameBounds">
-    <option name="x" value="39" />
-    <option name="y" value="23" />
+    <option name="x" value="592" />
+    <option name="y" value="164" />
     <option name="width" value="1387" />
     <option name="height" value="1396" />
   </component>
@@ -124,7 +124,7 @@
     <option name="totallyTimeSpent" value="671000" />
   </component>
   <component name="ToolWindowManager">
-    <frame x="39" y="23" width="1387" height="1396" extended-state="0" />
+    <frame x="592" y="164" width="1387" height="1396" extended-state="0" />
     <layout>
       <window_info active="true" content_ui="combo" id="Project" order="0" visible="true" weight="0.23670413" />
       <window_info id="Structure" order="1" side_tool="true" weight="0.25" />

@@ -1,9 +1,5 @@
 from enum import IntEnum, IntFlag
-import sys
-import os
 from clang.cindex import *
-from multiprocessing import Pool
-from pprint import pprint
 
 
 # http://clang.llvm.org/doxygen/Index_8h_source.html
@@ -66,6 +62,8 @@ class Analyzer:
         for child in node.get_children():
             self.traverse(child)
 
+    # Multiprocessing cannot be used: ctypes objects containing pointers cannot be pickled
+    # Yes, Python is awesome!
     def run(self):
         self.add_compile_commands_from_database()
         for cmd in self.commands:
