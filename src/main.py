@@ -77,7 +77,7 @@ def visitor(node: Cursor):
     if node.kind == CursorKind.CALL_EXPR:
         print(node.spelling + ' called')
     if node.kind == CursorKind.MACRO_DEFINITION:
-        print(node.spelling + ' macro definition')
+        print(node.spelling + 'macro definition')
 
 
 analyzer = Analyzer(
