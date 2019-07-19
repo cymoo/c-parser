@@ -78,9 +78,10 @@ def visitor(node: Cursor):
         print(node.spelling + 'macro definition')
 
 
-analyzer = Analyzer(
-    clang_lib_path='/usr/local/llvm/lib',
-    compilation_database_dir='../c-test/build'
-)
-analyzer.add_visitor(visitor)
-analyzer.run()
+if __name__ == '__main__':
+    analyzer = Analyzer(
+        clang_lib_path='/usr/local/llvm/lib',
+        compilation_database_dir='../c-test/build'
+    )
+    analyzer.add_visitor(visitor)
+    analyzer.run()
