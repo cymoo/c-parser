@@ -1,5 +1,16 @@
-from enum import IntEnum, IntFlag
+from abc import ABC, abstractmethod
+from enum import IntEnum
 from clang.cindex import *
+
+
+class Visitor(ABC):
+    @abstractmethod
+    def process(self, node: Cursor):
+        """处理每个节点"""
+
+    @abstractmethod
+    def post_process(self):
+        """处理完全部的翻译单元后，进行筛选分析等"""
 
 
 # http://clang.llvm.org/doxygen/Index_8h_source.html
@@ -40,7 +51,7 @@ class Analyzer:
         self._compilation_db_dir = compilation_database_dir
         self._tu_flags = tu_flags
 
-    def add_visitor(self, visitor: callable):
+    def add_visitor(self, visitor: Visitor):
         self._visitors.append(visitor)
 
     def add_compile_commands(self, cmd: [list, str]):
@@ -58,7 +69,7 @@ class Analyzer:
 
     def traverse(self, node: Cursor):
         for visitor in self._visitors:
-            visitor(node)
+            visitor.process(node)
         for child in node.get_children():
             self.traverse(child)
 
@@ -69,13 +80,39 @@ class Analyzer:
         for cmd in self.commands:
             tu = TranslationUnit.from_source(None, args=cmd, index=self.index, options=self._tu_flags)
             self.traverse(tu.cursor)
+        for visitor in self._visitors:
+            visitor.post_process()
 
 
-def visitor(node: Cursor):
-    if node.kind == CursorKind.CALL_EXPR:
-        print(node.spelling + ' called')
-    if node.kind == CursorKind.MACRO_DEFINITION:
-        print(node.spelling + 'macro definition')
+class MacroVisitor(Visitor):
+    def __init__(self):
+        self.defined_macro = {}
+        self.expanded_marco = {}
+
+    def process(self, node: Cursor):
+        if node.kind == CursorKind.MACRO_DEFINITION:
+            print('macro definition: {}'.format(node.displayname))
+        if node.kind == CursorKind.MACRO_INSTANTIATION:
+            pass
+
+    def post_process(self):
+        print('process macro done')
+
+
+class CallExprVisitor(Visitor):
+    pass
+
+
+class VarExprVisitor(Visitor):
+    pass
+
+
+class CXXMethodVisitor(Visitor):
+    pass
+
+
+class ClassDeclVisitor(Visitor):
+    pass
 
 
 if __name__ == '__main__':
@@ -83,5 +120,5 @@ if __name__ == '__main__':
         clang_lib_path='/usr/local/llvm/lib',
         compilation_database_dir='../c-test/build'
     )
-    analyzer.add_visitor(visitor)
+    analyzer.add_visitor(MacroVisitor())
     analyzer.run()
