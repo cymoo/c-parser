@@ -1,21 +1,33 @@
-from abc import ABC, abstractmethod, abstractclassmethod
+from abc import ABC, abstractmethod
 from clang.cindex import *
 from enum import IntEnum
-from functools import wraps
+from functools import wraps, reduce
+import json
 import os
+from os.path import join as p_join, abspath, isabs, dirname
 import sys
 from types import GeneratorType
 
+
 # 防止递归深度超过默认最大值999
-sys.setrecursionlimit(9999)
+# sys.setrecursionlimit(9999)
 
 
 def get_all_compile_commands(path: str) -> GeneratorType:
-    """从compile_commands.json中获取编译选项"""
+    """从compile_commands.json中获取编译选项，并将相对路径转为绝对路径"""
     db = CompilationDatabase.fromDirectory(path)
     commands = db.getAllCompileCommands()
     for cmd in commands:
-        yield list(cmd.arguments)
+        directory = cmd.directory
+        arguments = []
+        for arg in cmd.arguments:
+            if arg.startswith('-I') and arg[2] != '/':
+                arguments.append('-I' + abspath(p_join(directory, arg[2:])))
+            else:
+                arguments.append(arg)
+        if not isabs(arguments[-1]):
+            arguments[-1] = abspath(p_join(directory, arguments[-1]))
+        yield arguments
 
 
 def equal_slice(items: list, num: int) -> callable:
@@ -105,56 +117,67 @@ class Analyzer:
     # 1. multiprocessing.Pool: ctypes objects containing pointers cannot be pickled
     # 2. concurrent.futures.ThreadPoolExecutor: GIL
     # 3. concurrent.futures.ProcessPoolExecutor: dead lock
+
+    def handle_simple(self, commands):
+        index = Index.create(self.excluded_decls)
+        for cmd in commands:
+            tu = TranslationUnit.from_source(
+                None,
+                args=cmd,
+                index=index,
+                options=self.visitor.tu_flag
+            )
+            self.traverse(tu.cursor)
+            self.visitor.save()
+
+    def handle_multiple(self, commands, num):
+        slices = equal_slice(commands, num)
+        pids = []
+        for idx in range(num):
+            pid = os.fork()
+            if pid == 0:
+                # NOTE: 每个进程应独立创建index，否则可能会发生未预期的行为
+                index = Index.create(self.excluded_decls)
+                for cmd in slices(idx):
+                    tu = TranslationUnit.from_source(
+                        None,
+                        args=cmd,
+                        index=index,
+                        options=self.visitor.tu_flag
+                    )
+                    self.traverse(tu.cursor)
+                self.visitor.save()
+                sys.exit(0)
+            else:
+                pids.append(pid)
+
+        while len(pids):
+            # TODO: waitpid 在 MacOS 10.14.5下会等待所有进程结束后才返回，与linux下不一样？
+            # TODO：如果非正常退出...
+            pid, status = os.waitpid(-1, 0)
+            # this shall not happen...
+            if pid == -1 or pid == 0:
+                print('sys error', file=sys.stderr)
+                return
+            else:
+                pids.remove(pid)
+
     def run(self, commands: list, use_fork=True):
         cpus = os.cpu_count()
-        cmd_len = len(commands)
         # 当待分析的文件较少时，单进程即可
-        if cmd_len < cpus or not use_fork:
-            index = Index.create(self.excluded_decls)
-            for cmd in commands:
-                tu = TranslationUnit.from_source(
-                    None,
-                    args=cmd,
-                    index=index,
-                    options=self.visitor.tu_flag
-                )
-                self.traverse(tu.cursor)
+        if len(commands) < cpus or not use_fork:
+            self.handle_simple(commands)
         # 多进程处理
         else:
-            slices = equal_slice(commands, cpus)
-            pids = []
-            for idx in range(cpus):
-                pid = os.fork()
-                if pid == 0:
-                    # NOTE: 每个进程应独立创建index，否则可能会发生未预期的行为
-                    index = Index.create(self.excluded_decls)
-                    for cmd in slices(idx):
-                        tu = TranslationUnit.from_source(
-                            None,
-                            args=cmd,
-                            index=index,
-                            options=self.visitor.tu_flag
-                        )
-                        self.traverse(tu.cursor)
-                    sys.exit(0)
-                else:
-                    pids.append(pid)
+            self.handle_multiple(commands, os.cpu_count())
 
-            while len(pids):
-                # TODO: waitpid 在 MacOS 10.14.5下会等待所有进程结束后才返回，与linux下不一样？
-                pid, status = os.waitpid(-1, 0)
-                # this shall not happen...
-                if pid == -1 or pid == 0:
-                    print('sys error', file=sys.stderr)
-                    return
-                else:
-                    pids.remove(pid)
-
-            self.visitor.after_visits()
+        self.visitor.after_visits()
 
 
 class Visitor(ABC):
     tu_flag = 0
+
+    _SAVE_DIR = p_join(dirname(abspath((dirname(__file__)))), 'data/tmp')
 
     @classmethod
     def set_tu_flag(cls, flag: int = 0):
@@ -166,28 +189,53 @@ class Visitor(ABC):
         """访问每个节点，并进行相应处理"""
 
     @abstractmethod
+    def save(self):
+        """保存访问每个节点时产生的数据"""
+
+    @abstractmethod
     def after_visits(self):
         """处理完全部的翻译单元后，进行筛选分析等"""
 
 
 class MacroVisitor(Visitor):
     """寻找所有的宏定义和展开"""
+
     tu_flag = TranslationUnitFlags.DetailedPreprocessingRecord | \
               TranslationUnitFlags.SkipFunctionBodies
 
     def __init__(self):
-        self.defined_macro = {}
-        self.expanded_marco = {}
+        self.dirname = p_join(self._SAVE_DIR, str(int(time.time())))
+        self.defined_macro = set()
 
     @catch_error(Exception)
     def visit(self, node: Cursor):
-        if node.kind == CursorKind.MACRO_DEFINITION:
+        if node.kind == CursorKind.TRANSLATION_UNIT:
             print(node.displayname)
-        if node.kind == CursorKind.MACRO_INSTANTIATION:
-            pass
+        if node.kind == CursorKind.MACRO_DEFINITION:
+            self.defined_macro.add((
+                node.displayname,
+                node.location.line,
+                node.location.column,
+            ))
+
+    def save(self):
+        if not os.path.exists(self.dirname):
+            os.mkdir(self.dirname)
+        with open(p_join(self.dirname, str(os.getpid())), 'wt') as fp:
+            json.dump(list(self.defined_macro), fp)
 
     def after_visits(self):
-        pass
+        # os.system('cat {0}/* > {0}/result'.format(self.dirname))
+        ls = []
+        for file in os.listdir(self.dirname):
+            # BUG
+            with open(p_join(self.dirname, file), 'rt') as f:
+                ls.append(set(json.load(f)))
+
+        result = reduce(lambda s1, s2: s1.union(s2), ls, set())
+
+        with open(p_join(self.dirname, 'result.json'), 'wt') as fp:
+            json.dump(list(result), fp, indent=4)
 
 
 class GlobalVarDeclVisitor(Visitor):
@@ -195,10 +243,12 @@ class GlobalVarDeclVisitor(Visitor):
     tu_flag = TranslationUnitFlags.SkipFunctionBodies
 
     def __init__(self):
-        self.vars = {}
+        self.vars = []
 
     @catch_error(Exception)
     def visit(self, node: Cursor):
+        if node.kind == CursorKind.TRANSLATION_UNIT:
+            print(node.displayname)
         if (node.kind == CursorKind.VAR_DECL) and \
            (node.lexical_parent.kind == CursorKind.TRANSLATION_UNIT):
             location = node.location
@@ -208,6 +258,9 @@ class GlobalVarDeclVisitor(Visitor):
                 location.column,
                 location.file
             ))
+
+    def save(self, data):
+        self.vars.append(data)
 
     def after_visits(self):
         pass
