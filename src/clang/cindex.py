@@ -1434,6 +1434,9 @@ class Cursor(Structure):
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def is_macro_builtin(self):
+        return conf.lib.clang_Cursor_isMacroBuiltin(self)
+
     def is_definition(self):
         """
         Returns true if the declaration pointed at by the cursor is also a
@@ -4050,6 +4053,10 @@ functionList = [
   ("clang_Type_visitFields",
    [Type, callbacks['fields_visit'], py_object],
    c_uint),
+
+  ("clang_Cursor_isMacroBuiltin",
+   [Cursor],
+   bool),
 ]
 
 class LibclangError(Exception):

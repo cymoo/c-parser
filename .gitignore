@@ -59,6 +59,7 @@ pids
 
 ### Cache files
 
+tmp
 .cache
 .sass_cache
 
