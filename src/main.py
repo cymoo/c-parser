@@ -1,15 +1,26 @@
+import json
 import os
 import pickle
+import signal
 import sys
 from abc import ABC, abstractmethod
 from functools import reduce
 from os.path import join as p_join, abspath, isabs, dirname
+from pprint import pprint
 from types import GeneratorType
 
 from clang.cindex import *
-from pprint import pprint
 from tu_flag import TranslationUnitFlags
 from utils import equal_slice, catch_error
+
+
+# 主进程收到int信号时，同时也杀掉所有子进程
+def handle_sigint(signo, frame):
+    os.kill(0, signal.SIGINT)
+    sys.exit(1)
+
+
+signal.signal(signal.SIGINT, handle_sigint)
 
 
 def get_all_compile_commands(path: str) -> GeneratorType:
@@ -72,6 +83,7 @@ class Analyzer:
         for idx in range(num):
             pid = os.fork()
             if pid == 0:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
                 # NOTE: 每个进程应独立创建index，否则可能会发生未预期的行为
                 index = Index.create(self.excluded_decls)
                 for cmd in slices(idx):
@@ -100,7 +112,7 @@ class Analyzer:
     # Python标准库中的方法均无效，得自行调用fork处理
     # 1. multiprocessing.Pool: ctypes objects containing pointers cannot be pickled
     # 2. concurrent.futures.ProcessPoolExecutor: dead lock
-    def run(self, commands: list, use_fork=True):
+    def run(self, commands: list, use_fork=True, output_file=None):
         cpus = os.cpu_count()
         # 当待分析的文件较少时，单进程即可
         if len(commands) < cpus or not use_fork:
@@ -109,16 +121,21 @@ class Analyzer:
         else:
             self.handle_fork(commands, os.cpu_count())
 
-        self.visitor.merge()
+        result = self.visitor.merge()
+        if not output_file:
+            pprint(result)
+        else:
+            with open(output_file, 'wt') as fp:
+                json.dump(result, fp, indent=4)
 
 
 class Visitor(ABC):
     # 每个visitor可能需要不同的flag，比如仅寻找函数声明时，无需解析函数体
     tu_flag = 0
     # 是否打印详细信息，比如访问每个文件前，输出文件名
-    verbose = False
+    verbose = True
 
-    _TMP_DIR = p_join(dirname(abspath((dirname(__file__)))), 'data/tmp')
+    _TMP_DIR = p_join(dirname(abspath((dirname(__file__)))), 'tmp/pickle')
 
     @classmethod
     def set_tu_flag(cls, flag: int = 0):
@@ -132,11 +149,11 @@ class Visitor(ABC):
                 print(node.spelling, file=sys.stderr)
 
     @staticmethod
-    def dump(data, dirname, filename):
+    def dump(data, directory, filename):
         """使用pickle系列化数据至指定的文件中"""
-        if not os.path.exists(dirname):
-            os.makedirs(dirname)
-        with open(p_join(dirname, filename), 'wb') as fp:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        with open(p_join(directory, filename), 'wb') as fp:
             pickle.dump(data, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
     @abstractmethod
@@ -160,8 +177,7 @@ class Visitor(ABC):
 class MacroVisitor(Visitor):
     """寻找未被使用的宏"""
 
-    tu_flag = TranslationUnitFlags.DetailedPreprocessingRecord | \
-              TranslationUnitFlags.SkipFunctionBodies
+    tu_flag = TranslationUnitFlags.DetailedPreprocessingRecord
 
     def __init__(self):
         # 同一个头文件可能会被多次include，为了防止出现重复，须使用set，做好的方式是使用PCH
@@ -213,46 +229,62 @@ class MacroVisitor(Visitor):
         refs = reduce(reducer, self.load_from_dir(self._mr_dir), set())
         unused = [
             {'name': item[0], 'line': item[1], 'col': item[2], 'file': item[3]}
-            for item in (decls - refs) if not self.macro_from_sys(item[0], item[3])
+            for item in (decls - refs) if self.valid(item[0], item[3])
         ]
-        # test
-        pprint(unused)
+        return unused
 
     @staticmethod
-    def macro_from_sys(name: str, fpath: str) -> bool:
-        return fpath.startswith('/usr') or fpath.startswith('/Library')
+    def valid(name: str, file: str) -> bool:
+        return (not file.startswith('/usr')) and \
+               (not file.startswith('/Library'))
 
 
-class TypedefVisitor(Visitor):
-    """寻找未被使用的typedef"""
+class FuncCallVisitor(Visitor):
+    """寻找未被调用的函数"""
 
+    def __init__(self):
+        self.decls = set()
+        self.calls = set()
 
-class GlobalVarDeclVisitor(Visitor):
-    """寻找全局变量声明和定义"""
+        self.dir1 = p_join(self._TMP_DIR, 'fd', str(int(time.time())))
 
+    @catch_error(ValueError)
+    def visit(self, node: Cursor):
+        if node.kind == CursorKind.FUNCTION_DECL:
+            if node.location.file.name.startswith('/Library'):
+                return
+            self.decls.add((
+                node.spelling,
+                node.type.get_canonical().spelling,
+                node.location.line,
+                node.location.column,
+                'def' if node.is_definition() else '',
+                'static' if node.linkage == LinkageKind.INTERNAL else '',
+                node.location.file.name,
+            ))
 
-class FunctionDeclVisitor(Visitor):
-    """寻找函数声明和定义"""
+    def store(self):
+        self.dump(self.decls, self.dir1, str(os.getpid()))
 
+    def merge(self):
 
-class CallExprVisitor(Visitor):
-    """寻找所有的函数调用"""
+        def reducer(s1: set, s2: set) -> set:
+            return s1.union(s2)
 
-
-class CXXMethodVisitor(Visitor):
-    """寻找C++方法声明和定义"""
-
-
-class ClassDeclVisitor(Visitor):
-    """寻找C++类声明和定义"""
+        decls = reduce(reducer, self.load_from_dir(self.dir1), set())
+        pprint(decls)
 
 
 if __name__ == '__main__':
     import time
+    from shutil import rmtree
+    if os.path.exists('../tmp/pickle'):
+        rmtree('../tmp/pickle')
+
     cdb = '/Users/cymoo/Documents/github/clang/cmake-build-debug'
     # cdb = '../c-test/build'
     t1 = time.time()
-    visitor = MacroVisitor()
+    visitor = FuncCallVisitor()
     analyzer = Analyzer(
         clang_lib_path='/usr/local/llvm/lib',
         visitor=visitor
