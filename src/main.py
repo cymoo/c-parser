@@ -244,35 +244,53 @@ class FuncCallVisitor(Visitor):
 
     def __init__(self):
         self.decls = set()
-        self.calls = set()
+        self.refs = set()
 
-        self.dir1 = p_join(self._TMP_DIR, 'fd', str(int(time.time())))
+        self._dir1 = p_join(self._TMP_DIR, 'func-decl', str(int(time.time())))
+        self._dir2 = p_join(self._TMP_DIR, 'func-ref', str(int(time.time())))
 
     @catch_error(ValueError)
     def visit(self, node: Cursor):
         if node.kind == CursorKind.FUNCTION_DECL:
             if node.location.file.name.startswith('/Library'):
                 return
-            self.decls.add((
-                node.spelling,
-                node.type.get_canonical().spelling,
-                node.location.line,
-                node.location.column,
-                'def' if node.is_definition() else '',
-                'static' if node.linkage == LinkageKind.INTERNAL else '',
-                node.location.file.name,
-            ))
+            self.decls.add(self.get_node_info(node))
+        if node.kind == CursorKind.CALL_EXPR:
+            ref_node = node.referenced
+            # 为什么会为None?
+            if ref_node is None:
+                return
+            # operator new
+            if ref_node.location.file is None:
+                return
+            if ref_node.location.file.name.startswith('/Library'):
+                return
+            self.refs.add(self.get_node_info(ref_node))
+
+    @staticmethod
+    def get_node_info(node):
+        return (
+            node.spelling,
+            node.type.get_canonical().spelling,
+            node.location.line,
+            node.location.column,
+            node.is_definition(),
+            node.linkage == LinkageKind.INTERNAL,
+            node.location.file.name,
+        )
 
     def store(self):
-        self.dump(self.decls, self.dir1, str(os.getpid()))
+        self.dump(self.decls, self._dir1, str(os.getpid()))
+        self.dump(self.refs, self._dir2, str(os.getpid()))
 
     def merge(self):
 
         def reducer(s1: set, s2: set) -> set:
             return s1.union(s2)
 
-        decls = reduce(reducer, self.load_from_dir(self.dir1), set())
-        pprint(decls)
+        decls = reduce(reducer, self.load_from_dir(self._dir1), set())
+        refs = reduce(reducer, self.load_from_dir(self._dir2), set())
+        pprint(decls - refs)
 
 
 if __name__ == '__main__':
