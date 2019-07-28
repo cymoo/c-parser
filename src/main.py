@@ -5,6 +5,7 @@ import signal
 import sys
 from abc import ABC, abstractmethod
 from functools import reduce
+from itertools import groupby
 from os.path import join as p_join, abspath, isabs, dirname
 from pprint import pprint
 from types import GeneratorType
@@ -254,7 +255,15 @@ class FuncCallVisitor(Visitor):
         if node.kind == CursorKind.FUNCTION_DECL:
             if node.location.file.name.startswith('/Library'):
                 return
-            self.decls.add(self.get_node_info(node))
+            self.decls.add((
+                node.spelling,
+                node.type.get_canonical().spelling,
+                node.location.line,
+                node.location.column,
+                node.location.file.name,
+                # node.is_definition(),
+                # node.linkage == LinkageKind.INTERNAL,
+            ))
         if node.kind == CursorKind.CALL_EXPR:
             ref_node = node.referenced
             # 为什么会为None?
@@ -265,19 +274,10 @@ class FuncCallVisitor(Visitor):
                 return
             if ref_node.location.file.name.startswith('/Library'):
                 return
-            self.refs.add(self.get_node_info(ref_node))
-
-    @staticmethod
-    def get_node_info(node):
-        return (
-            node.spelling,
-            node.type.get_canonical().spelling,
-            node.location.line,
-            node.location.column,
-            node.is_definition(),
-            node.linkage == LinkageKind.INTERNAL,
-            node.location.file.name,
-        )
+            self.refs.add((
+                ref_node.spelling,
+                ref_node.type.get_canonical().spelling,
+            ))
 
     def store(self):
         self.dump(self.decls, self._dir1, str(os.getpid()))
@@ -288,9 +288,17 @@ class FuncCallVisitor(Visitor):
         def reducer(s1: set, s2: set) -> set:
             return s1.union(s2)
 
+        basis = lambda x: (x[0], x[1])
+
         decls = reduce(reducer, self.load_from_dir(self._dir1), set())
+        g_decls = {item[0]: list(item[1]) for item in groupby(sorted(decls, key=basis), basis)}
+        decls = None
         refs = reduce(reducer, self.load_from_dir(self._dir2), set())
-        pprint(decls - refs)
+        unused = set(g_decls) - refs
+        refs = None
+        result = [g_decls[key] for key in unused]
+        with open('foo.json', 'wt') as fp:
+            json.dump(result, fp, indent=4)
 
 
 if __name__ == '__main__':
@@ -299,8 +307,8 @@ if __name__ == '__main__':
     if os.path.exists('../tmp/pickle'):
         rmtree('../tmp/pickle')
 
-    cdb = '/Users/cymoo/Documents/github/clang/cmake-build-debug'
-    # cdb = '../c-test/build'
+    # cdb = '/Users/cymoo/Documents/github/clang/cmake-build-debug'
+    cdb = '../c-test/build'
     t1 = time.time()
     visitor = FuncCallVisitor()
     analyzer = Analyzer(

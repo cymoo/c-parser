@@ -1,0 +1,36 @@
+[
+    [
+        [
+            "bar",
+            "StringArray *(StringArray *)",
+            54,
+            5,
+            "/Users/cymoo/Documents/repo/c-parser/c-test/main.cpp"
+        ],
+        [
+            "bar",
+            "StringArray *(StringArray *)",
+            12,
+            5,
+            "/Users/cymoo/Documents/repo/c-parser/c-test/main.cpp"
+        ]
+    ],
+    [
+        [
+            "static_func",
+            "void ()",
+            49,
+            13,
+            "/Users/cymoo/Documents/repo/c-parser/c-test/main.cpp"
+        ]
+    ],
+    [
+        [
+            "main",
+            "int ()",
+            59,
+            5,
+            "/Users/cymoo/Documents/repo/c-parser/c-test/main.cpp"
+        ]
+    ]
+]
